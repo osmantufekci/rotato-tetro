@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>CoreStack</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; overflow:hidden; background:#05060c;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+    color:#fff; user-select:none; }
+  #wrap { position:fixed; inset:0; }
+  canvas { display:block; width:100%; height:100%; touch-action:none; }
+  .hud { position:absolute; top:max(14px,env(safe-area-inset-top)); left:0; right:0;
+    display:flex; justify-content:space-between; padding:0 18px; pointer-events:none;
+    font-variant-numeric:tabular-nums; }
+  .hud .box { background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.08);
+    padding:8px 14px; border-radius:12px; backdrop-filter:blur(6px); }
+  .hud .label { font-size:11px; letter-spacing:.12em; opacity:.55; text-transform:uppercase; }
+  .hud .val { font-size:22px; font-weight:700; }
+  #score .val { color:#ffd23f; }
+  #level .val { color:#4fc3f7; }
+  .controls { position:absolute; bottom:max(20px,env(safe-area-inset-bottom)); left:0; right:0;
+    display:flex; gap:12px; justify-content:center; padding:0 18px; }
+  .btn { flex:1; max-width:160px; min-height:56px; border:none; border-radius:14px;
+    background:rgba(255,255,255,.08); color:#fff; font-size:16px; font-weight:600;
+    display:flex; align-items:center; justify-content:center; gap:8px; cursor:pointer;
+    border:1px solid rgba(255,255,255,.1); }
+  .btn:active { background:rgba(255,255,255,.18); transform:scale(.97); }
+  .next { position:absolute; top:max(70px,calc(env(safe-area-inset-top) + 56px)); right:18px;
+    background:rgba(255,255,255,.04); border:1px solid rgba(255,255,255,.08);
+    border-radius:12px; padding:8px; text-align:center; }
+  .next .label { font-size:10px; letter-spacing:.12em; opacity:.5; margin-bottom:4px; }
+  .hint { position:absolute; bottom:90px; left:0; right:0; text-align:center;
+    font-size:13px; opacity:.4; pointer-events:none; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div class="hud">
+    <div class="box" id="score"><div class="label">Skor</div><div class="val">0</div></div>
+    <div class="box" id="level"><div class="label">Seviye</div><div class="val">1</div></div>
+  </div>
+  <div class="next"><div class="label">SIRADAKİ</div><canvas id="nx" width="64" height="64"></canvas></div>
+  <div class="hint">Parçayı sürükleyip çekirdeğe yapıştır · elması doldur</div>
+  <div class="controls">
+    <button class="btn" id="rotBtn">⟳ Döndür</button>
+    <button class="btn" id="resetBtn">↺ Sıfırla</button>
+  </div>
+</div>
+<script>
+// ============================== Kurulum ==============================
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W=0, H=0, DPR=1;
+
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cvs.width = W*DPR; cvs.height = H*DPR;
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+  buildStars();
+}
+window.addEventListener('resize', resize);
+
+// ============================== Şekiller ==============================
+const PALETTE = ['#4ec26b','#f28c26','#9a4ed9','#34bfd9','#f2cd33','#e64550','#4090f2'];
+const SHAPES = [
+  [[0,0],[1,0],[2,0],[3,0]],       // I
+  [[0,0],[1,0],[0,1],[1,1]],       // O
+  [[0,0],[1,0],[2,0],[1,1]],       // T
+  [[0,1],[1,1],[1,0],[2,0]],       // S
+  [[0,0],[1,0],[1,1],[2,1]],       // Z
+  [[0,0],[0,1],[1,1],[2,1]],       // J
+  [[2,0],[0,1],[1,1],[2,1]],       // L
+];
+function randPiece(){
+  const i = (Math.random()*SHAPES.length)|0;
+  return { cells: SHAPES[i].map(c=>[c[0],c[1]]), color: PALETTE[i] };
+}
+function normalize(cells){
+  const mnx=Math.min(...cells.map(c=>c[0])), mny=Math.min(...cells.map(c=>c[1]));
+  return cells.map(c=>[c[0]-mnx, c[1]-mny]);
+}
+function rotate(cells){ // (x,y)->(y,-x)
+  return normalize(cells.map(c=>[c[1], -c[0]]));
+}
+
+// ============================== Durum ==============================
+let board, score, level, targetR, piece, nextPiece, cursor, particles, popups, shake, over;
+
+function key(x,y){ return x+','+y; }
+
+function reset(){
+  board = new Map();
+  board.set(key(0,0), {color:'#ffffff', core:true});
+  score=0; level=1; targetR=2;
+  particles=[]; popups=[]; shake=0; over=false;
+  nextPiece = randPiece();
+  spawn();
+  updateHud();
+}
+function spawn(){
+  piece = nextPiece;
+  nextPiece = randPiece();
+  cursor = {x:0, y:-(targetR+1)};
+  drawNext();
+}
+function updateHud(){
+  document.querySelector('#score .val').textContent = score;
+  document.querySelector('#level .val').textContent = level;
+}
+
+// piece'in mutlak hücreleri (cursor merkezli)
+function absCells(){
+  const cs = piece.cells;
+  const cx = (Math.max(...cs.map(c=>c[0])))/2;
+  const cy = (Math.max(...cs.map(c=>c[1])))/2;
+  return cs.map(c=>[cursor.x + c[0] - Math.round(cx), cursor.y + c[1] - Math.round(cy)]);
+}
+function valid(cells){
+  let touches=false;
+  for(const [x,y] of cells){
+    if(board.has(key(x,y))) return false;                 // çakışma yok
+    if(Math.abs(x)+Math.abs(y) > targetR+2) return false; // çok uzağa kaçma
+  }
+  for(const [x,y] of cells){                              // kümeye komşu mu?
+    if(board.has(key(x+1,y))||board.has(key(x-1,y))||
+       board.has(key(x,y+1))||board.has(key(x,y-1))){ touches=true; break; }
+  }
+  return touches;
+}
+function place(){
+  const cells = absCells();
+  if(!valid(cells)) return false;
+  for(const [x,y] of cells) board.set(key(x,y), {color:piece.color});
+  checkComplete();
+  if(!over) spawn();
+  return true;
+}
+
+// hedef elması dolu mu?
+function diamondCells(r){
+  const out=[];
+  for(let dy=-r; dy<=r; dy++)
+    for(let dx=-(r-Math.abs(dy)); dx<=r-Math.abs(dy); dx++) out.push([dx,dy]);
+  return out;
+}
+function checkComplete(){
+  for(const [x,y] of diamondCells(targetR))
+    if(!board.has(key(x,y))) return;
+  // TAMAM! patlat + skor
+  let cleared=0;
+  for(const [k,v] of board){
+    if(v.core) continue;
+    const [x,y]=k.split(',').map(Number);
+    burst(x,y, v.color); cleared++;
+  }
+  const gained = cleared*10*level + 200;
+  score += gained;
+  popups.push({x:0, y:0, life:1.2, text:'GREAT +'+gained});
+  shake = 14;
+  beep(660,.08); setTimeout(()=>beep(880,.1),70); setTimeout(()=>beep(1100,.12),150);
+  // kümeyi çekirdeğe sıfırla, hedefi büyüt
+  board = new Map(); board.set(key(0,0), {color:'#ffffff', core:true});
+  level++; targetR++;
+  updateHud();
+}
+
+// ============================== Partikül / efekt ==============================
+function burst(gx,gy,color){
+  for(let i=0;i<9;i++){
+    const a=Math.random()*Math.PI*2, s=2+Math.random()*5;
+    particles.push({x:gx, y:gy, vx:Math.cos(a)*s, vy:Math.sin(a)*s-2,
+      color, life:0.6+Math.random()*0.5, rot:Math.random()*6, vr:(Math.random()-.5)*10,
+      size:0.18+Math.random()*0.22});
+  }
+}
+let stars=[];
+function buildStars(){
+  stars=[]; const n=Math.round(W*H/9000);
+  for(let i=0;i<n;i++) stars.push({x:Math.random()*W, y:Math.random()*H,
+    z:Math.random(), tw:Math.random()*Math.PI*2});
+}
+
+// ses (opsiyonel, sessize alınabilir)
+let actx;
+function beep(freq,dur){
+  try{
+    actx = actx || new (window.AudioContext||window.webkitAudioContext)();
+    const o=actx.createOscillator(), g=actx.createGain();
+    o.type='square'; o.frequency.value=freq;
+    g.gain.value=0.04; o.connect(g); g.connect(actx.destination);
+    o.start(); g.gain.exponentialRampToValueAtTime(0.001, actx.currentTime+dur);
+    o.stop(actx.currentTime+dur);
+  }catch(e){}
+}
+
+// ============================== Kamera / koordinat ==============================
+let cell=30, ox=0, oy=0;
+function computeCamera(){
+  const view = (targetR+3)*2+1;
+  cell = Math.floor(Math.min(W, H-160)/view);
+  ox = W/2; oy = H/2;
+}
+function g2s(x,y){ return [ox + x*cell, oy + y*cell]; }
+function s2g(px,py){ return [Math.round((px-ox)/cell), Math.round((py-oy)/cell)]; }
+
+// ============================== Çizim ==============================
+function roundRect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function drawCell(x,y,color,inset=2,glow=false){
+  const [sx,sy]=g2s(x,y);
+  const px=sx-cell/2+inset, py=sy-cell/2+inset, s=cell-inset*2;
+  if(glow){ ctx.shadowColor=color; ctx.shadowBlur=14; }
+  roundRect(px,py,s,s,4); ctx.fillStyle=color; ctx.fill();
+  ctx.shadowBlur=0;
+  // iç highlight
+  const grad=ctx.createLinearGradient(px,py,px,py+s);
+  grad.addColorStop(0,'rgba(255,255,255,.28)'); grad.addColorStop(.5,'rgba(255,255,255,0)');
+  roundRect(px,py,s,s,4); ctx.fillStyle=grad; ctx.fill();
+  ctx.strokeStyle='rgba(255,255,255,.22)'; ctx.lineWidth=1;
+  roundRect(px,py,s,s,4); ctx.stroke();
+}
+
+function render(dt){
+  computeCamera();
+  ctx.clearRect(0,0,W,H);
+
+  // arka plan gradyanı
+  const bg=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.7);
+  bg.addColorStop(0,'#0d1020'); bg.addColorStop(1,'#04050a');
+  ctx.fillStyle=bg; ctx.fillRect(0,0,W,H);
+
+  // yıldızlar
+  for(const st of stars){
+    st.tw += dt*2; st.y += dt*6*(0.3+st.z);
+    if(st.y>H){ st.y=0; st.x=Math.random()*W; }
+    const a=(0.3+0.7*Math.abs(Math.sin(st.tw)))*(0.3+st.z);
+    ctx.fillStyle='rgba(180,200,255,'+a.toFixed(2)+')';
+    ctx.fillRect(st.x, st.y, 1+st.z*1.5, 1+st.z*1.5);
+  }
+
+  // hex zemin
+  drawHex();
+
+  ctx.save();
+  if(shake>0){ ctx.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake); shake*=0.85; if(shake<0.4)shake=0; }
+
+  // hedef elması (kesik çizgi)
+  ctx.setLineDash([6,5]); ctx.lineWidth=2; ctx.strokeStyle='rgba(255,255,255,.55)';
+  for(const [x,y] of diamondCells(targetR)){
+    if(board.has(key(x,y))) continue;
+    const [sx,sy]=g2s(x,y);
+    roundRect(sx-cell/2+2, sy-cell/2+2, cell-4, cell-4, 4); ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // yerleşmiş bloklar
+  for(const [k,v] of board){
+    const [x,y]=k.split(',').map(Number);
+    drawCell(x,y, v.color, 2, v.core);
+    if(v.core){ // çekirdek parıltısı
+      const [sx,sy]=g2s(x,y);
+      ctx.fillStyle='rgba(255,255,255,.9)';
+      ctx.beginPath(); ctx.arc(sx,sy,cell*0.12,0,7); ctx.fill();
+    }
+  }
+
+  // ghost + aktif parça
+  const cells=absCells(); const ok=valid(cells);
+  for(const [x,y] of cells){
+    const [sx,sy]=g2s(x,y);
+    ctx.setLineDash([4,3]); ctx.lineWidth=2;
+    ctx.strokeStyle = ok ? 'rgba(255,255,255,.8)' : 'rgba(230,69,80,.8)';
+    roundRect(sx-cell/2+3, sy-cell/2+3, cell-6, cell-6, 4); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.globalAlpha = ok?0.55:0.3;
+    drawCell(x,y, piece.color, 4);
+    ctx.globalAlpha = 1;
+  }
+
+  // partiküller
+  for(const p of particles){
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=9*dt; p.life-=dt*1.3; p.rot+=p.vr*dt;
+    const [sx,sy]=g2s(p.x,p.y); const s=p.size*cell;
+    ctx.save(); ctx.translate(sx,sy); ctx.rotate(p.rot); ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.color; ctx.fillRect(-s/2,-s/2,s,s); ctx.restore();
+  }
+  particles=particles.filter(p=>p.life>0);
+  ctx.globalAlpha=1;
+
+  // skor popup
+  for(const pop of popups){
+    pop.life-=dt; pop.y-=dt*1.1;
+    const [sx,sy]=g2s(pop.x,pop.y);
+    ctx.globalAlpha=Math.min(1,pop.life*1.6);
+    ctx.font='800 '+Math.round(cell*0.7)+'px sans-serif';
+    ctx.textAlign='center'; ctx.fillStyle='#ffd23f';
+    ctx.shadowColor='#000'; ctx.shadowBlur=8;
+    ctx.fillText(pop.text, sx, sy); ctx.shadowBlur=0; ctx.globalAlpha=1;
+  }
+  popups=popups.filter(p=>p.life>0);
+
+  ctx.restore();
+}
+
+function drawHex(){
+  const r=26, w=r*Math.sqrt(3), h=r*1.5;
+  ctx.strokeStyle='rgba(120,140,200,.06)'; ctx.lineWidth=1;
+  ctx.beginPath();
+  for(let row=-1, y=0; y<H+h; row++, y=row*h){
+    const xoff = (row%2)? w/2:0;
+    for(let x=-w; x<W+w; x+=w){
+      hexPath(x+xoff, y, r);
+    }
+  }
+  ctx.stroke();
+}
+function hexPath(cx,cy,r){
+  for(let i=0;i<6;i++){
+    const a=Math.PI/180*(60*i-90);
+    const px=cx+r*Math.cos(a), py=cy+r*Math.sin(a);
+    if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py);
+  }
+  ctx.closePath();
+}
+
+// sıradaki parça önizleme
+const nxc=document.getElementById('nx'), nxx=nxc.getContext('2d');
+function drawNext(){
+  nxx.clearRect(0,0,64,64);
+  const cs=normalize(nextPiece.cells);
+  const mw=Math.max(...cs.map(c=>c[0]))+1, mh=Math.max(...cs.map(c=>c[1]))+1;
+  const s=Math.min(56/mw,56/mh), offx=(64-mw*s)/2, offy=(64-mh*s)/2;
+  for(const [x,y] of cs){
+    nxx.fillStyle=nextPiece.color;
+    nxx.fillRect(offx+x*s+1, offy+y*s+1, s-2, s-2);
+  }
+}
+
+// ============================== Döngü ==============================
+let last=0;
+function loop(t){
+  const dt=Math.min((t-last)/1000, 1/30); last=t;
+  render(dt);
+  requestAnimationFrame(loop);
+}
+
+// ============================== Girdi ==============================
+function pointerCell(e){
+  const r=cvs.getBoundingClientRect();
+  return s2g(e.clientX-r.left, e.clientY-r.top);
+}
+cvs.addEventListener('pointermove', e=>{
+  const [x,y]=pointerCell(e); cursor.x=x; cursor.y=y;
+});
+cvs.addEventListener('pointerup', e=>{
+  const [x,y]=pointerCell(e); cursor.x=x; cursor.y=y;
+  if(place()) beep(440,.05);
+});
+document.getElementById('rotBtn').addEventListener('click', ()=>{ piece.cells=rotate(piece.cells); });
+document.getElementById('resetBtn').addEventListener('click', reset);
+window.addEventListener('keydown', e=>{
+  if(e.key==='ArrowLeft') cursor.x--;
+  else if(e.key==='ArrowRight') cursor.x++;
+  else if(e.key==='ArrowUp') cursor.y--;
+  else if(e.key==='ArrowDown') cursor.y++;
+  else if(e.key==='r'||e.key==='R'||e.key===' ') piece.cells=rotate(piece.cells);
+  else if(e.key==='Enter') { if(place()) beep(440,.05); }
+});
+
+// ============================== Başlat ==============================
+resize(); reset(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
