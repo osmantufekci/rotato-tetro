@@ -207,6 +207,8 @@ function lock(){
   if(isFull()){
     busy=true;
     setTimeout(()=>{if(!over)resolve(0);},ROT_MS);
+  } else if(unreachableHole()){
+    busy=true;gameOver();
   } else {
     spawn();
   }
@@ -222,6 +224,48 @@ function rotateCluster(dir){
   }
   board=nb;
   clusterAngle=dir>0?-Math.PI/2:Math.PI/2;
+}
+function unreachableHole(){
+  const r=AR()+1,seen=new Set(),stack=[];
+  const push=(x,y)=>{const k=key(x,y);if(!seen.has(k)&&!board.has(k)){seen.add(k);stack.push([x,y]);}};
+  for(let x=-r;x<=r;x++){push(x,-r);push(x,r);}
+  for(let y=-r;y<=r;y++){push(-r,y);push(r,y);}
+  while(stack.length){
+    const [x,y]=stack.pop();
+    for(const [nx,ny] of [[x+1,y],[x-1,y],[x,y+1],[x,y-1]]){
+      if(nx<-r||nx>r||ny<-r||ny>r)continue;
+      const k=key(nx,ny);
+      if(seen.has(k)||board.has(k))continue;
+      seen.add(k);stack.push([nx,ny]);
+    }
+  }
+  for(const [x,y] of targetCells()){
+    if(x===0&&y===0)continue;
+    if(!board.has(key(x,y))&&!seen.has(key(x,y)))return true;
+  }
+  return false;
+}
+function deadlocked(){
+  const r=AR()+1;
+  const open=new Set(),stack=[];
+  function pushOpen(x,y){
+    if(x<-r||x>r||y<-r||y>r)return;
+    const k=key(x,y);
+    if(open.has(k)||board.has(k))return;
+    open.add(k);stack.push([x,y]);
+  }
+  for(let x=-r;x<=r;x++){pushOpen(x,-r);pushOpen(x,r);}
+  for(let y=-r;y<=r;y++){pushOpen(-r,y);pushOpen(r,y);}
+  while(stack.length){
+    const [x,y]=stack.pop();
+    pushOpen(x+1,y);pushOpen(x-1,y);pushOpen(x,y+1);pushOpen(x,y-1);
+  }
+  for(const [x,y] of targetCells()){
+    if(x===0&&y===0)continue;
+    if(board.has(key(x,y)))continue;
+    if(!open.has(key(x,y)))return true;
+  }
+  return false;
 }
 function isFull(){
   for(const [x,y] of targetCells()){
@@ -262,7 +306,10 @@ function resolve(combo){
     },CLEAR_MS);
   } else {
     if(combo>0)advance();
-    if(!over){spawn();busy=false;}
+    if(!over){
+      if(unreachableHole()){gameOver();return;}
+      spawn();busy=false;
+    }
   }
 }
 function advance(){
