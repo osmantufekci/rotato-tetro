@@ -569,18 +569,33 @@ function loop(t){
   requestAnimationFrame(loop);
 }
 
-let dragX=null;
+let gActive=false,baseX=0,baseY=0,lastX=0,lastY=0,lastT=0,consumed=false;
+const FAST_V=0.95;
 cvs.addEventListener('pointerdown',e=>{
   if(over){if(document.getElementById('over').style.display==='flex')reset();return;}
-  dragX=e.clientX;
+  try{cvs.setPointerCapture(e.pointerId);}catch(_){}
+  gActive=true;consumed=false;
+  baseX=lastX=e.clientX;baseY=lastY=e.clientY;lastT=performance.now();
 });
 cvs.addEventListener('pointermove',e=>{
-  if(dragX===null||over||busy)return;
-  const d=Math.round((e.clientX-dragX)/cell);
-  if(d!==0){const s=Math.abs(d);for(let i=0;i<s;i++)move(d>0?1:-1);dragX+=d*cell;}
+  if(!gActive||over)return;
+  const now=performance.now();
+  const segDx=e.clientX-lastX,segDy=e.clientY-lastY,segDt=Math.max(1,now-lastT);
+  lastX=e.clientX;lastY=e.clientY;lastT=now;
+  if(busy||consumed)return;
+  if(segDy>8&&segDy>Math.abs(segDx)&&segDy/segDt>FAST_V){hardDrop();consumed=true;return;}
+  const dx=e.clientX-baseX,hx=Math.round(dx/cell);
+  if(hx!==0){const s=Math.abs(hx);for(let i=0;i<s;i++)move(hx>0?1:-1);baseX+=hx*cell;}
+  const dy=e.clientY-baseY;
+  if(dy>=cell){
+    const vyc=Math.floor(dy/cell),pc=piece;
+    for(let i=0;i<vyc;i++){if(busy||over||piece!==pc)break;step();}
+    if(busy||over||piece!==pc)consumed=true;
+    baseY+=vyc*cell;
+  } else if(dy<0){baseY=e.clientY;}
 });
-cvs.addEventListener('pointerup',()=>{dragX=null;});
-cvs.addEventListener('pointercancel',()=>{dragX=null;});
+cvs.addEventListener('pointerup',()=>{gActive=false;});
+cvs.addEventListener('pointercancel',()=>{gActive=false;});
 
 document.getElementById('rotBtn').addEventListener('click',()=>{if(!over&&!busy)rotatePiece();});
 document.getElementById('dropBtn').addEventListener('click',()=>{if(!over&&!busy)hardDrop();});
