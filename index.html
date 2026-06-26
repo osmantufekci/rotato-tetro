@@ -569,13 +569,13 @@ function loop(t){
   requestAnimationFrame(loop);
 }
 
-let gActive=false,baseX=0,baseY=0,lastX=0,lastY=0,lastT=0,consumed=false;
+let gActive=false,baseX=0,baseY=0,lastX=0,lastY=0,lastT=0,consumed=false,downX=0,downY=0,downT=0;
 const FAST_V=0.95;
 cvs.addEventListener('pointerdown',e=>{
   if(over){if(document.getElementById('over').style.display==='flex')reset();return;}
   try{cvs.setPointerCapture(e.pointerId);}catch(_){}
   gActive=true;consumed=false;
-  baseX=lastX=e.clientX;baseY=lastY=e.clientY;lastT=performance.now();
+  baseX=lastX=downX=e.clientX;baseY=lastY=downY=e.clientY;lastT=downT=performance.now();
 });
 cvs.addEventListener('pointermove',e=>{
   if(!gActive||over)return;
@@ -594,7 +594,13 @@ cvs.addEventListener('pointermove',e=>{
     baseY+=vyc*cell;
   } else if(dy<0){baseY=e.clientY;}
 });
-cvs.addEventListener('pointerup',()=>{gActive=false;});
+cvs.addEventListener('pointerup',e=>{
+  if(gActive&&!over&&!busy&&!consumed){
+    const dist=Math.hypot(e.clientX-downX,e.clientY-downY);
+    if(dist<12&&performance.now()-downT<300)rotatePiece();
+  }
+  gActive=false;
+});
 cvs.addEventListener('pointercancel',()=>{gActive=false;});
 
 document.getElementById('rotBtn').addEventListener('click',()=>{if(!over&&!busy)rotatePiece();});
